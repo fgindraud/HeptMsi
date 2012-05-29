@@ -1,0 +1,310 @@
+open Iostream
+
+(* ---------------- Header ----------------- *)
+
+(* Sim param *)
+const cache_size : int = 3
+const nbNode : int = 2
+
+(* Common struct *)
+type instr_what = R | W | Nop | Sync | WFlush
+type cache_state = M | S | I
+
+type instr_type = {
+	what : instr_what ;
+	arg : int ;
+	v : int
+}
+
+const default_instr : instr_type = { what = Nop ; arg = -1 ; v = -1 }
+
+type request_type = {
+	t : instr_what ;
+	a : int
+}
+
+type bus_cache_type = {
+	(* M state management *)
+	want_ownership : bool ; who_owns : int ;
+
+	(* Backing store interaction *)
+	want_write : bool ; value : int
+}
+
+const default_bus_cache : bus_cache_type = {
+	want_ownership = false ; who_owns = -1 ;
+
+	has_valid_value = false ; value = -1
+}
+
+type bus_type = {
+	sync : bool ;
+	cache_bus : bus_cache_type^cache_size
+}
+
+type cache_block_output = {
+	(* for processor answer *)
+	request_out : int ;
+	request_done : bool ;
+	(* cache global info *)
+	cache_st : cache_state ;
+	(* bus out *)
+	bus_out : bus_cache_type
+}
+
+(* Utils *)
+fun stringOfInstr (i : instr_what) returns (o : string)
+let
+	switch i
+		| R do o = "Read" ;
+		| W do o = "Write" ;
+		| Nop do o = "Nop" ;
+		| Sync do o = "Sync" ;
+		| WFlush do o = "WFlush"
+	end
+tel
+
+fun stringOfState (s : cache_state) returns (o : string)
+let
+	switch s
+		| M do o = "M" ;
+		| S do o = "S" ;
+		| I do o = "I"
+	end
+tel
+
+(* ----------------- Cache ----------------- *)
+node cache_block (
+	node_id : int ;
+	(* processor in *)
+	request : request_type ;
+	(* bus in *)
+	bus_in : bus_cache_type
+) returns (
+	(* exported out *)
+	out : cache_block_output
+) var
+	ok : bool ;
+	bus_o : bus_cache_type ;
+	last data : int = 0 ;
+	last st : cache_state = S ;
+let
+	automaton
+		(* Waiting states *)
+		state W_I do
+			st = I ;
+			ok = false ; bus_o = default_bus_cache
+		state W_S do
+			st = S ;
+			ok = false ; bus_o = default_bus_cache
+			unless request.t = R then A_S_R
+				| request.t = W then A_S_W
+		state W_M do
+			st = M ;
+			ok = false ; bus_o = { default_bus_cache with .want_ownership = true }
+			unless request.t = R then A_M_R
+		(* Action states for S state *)
+		state A_S_R do
+			ok = true ; bus_o = default_bus_cache
+			until true then W_S
+		state A_S_W do
+			data = request.a fby data ;
+			ok = false ; (* Wait for ownership *)
+			bus_o = { default_bus_cache with .want_ownership = true } ; (* Maintain request *)
+			until bus_in.who_owns = node_id then W_M
+		(* Action states for M state *)
+		state A_M_R do
+			ok = true ; bus_o = default_bus_cache
+			until true then W_M
+	end ;
+	(* Forward real data *)
+	out = {
+		(* proc *)
+		request_out = data ;
+		request_done = ok ;
+		(* info *)
+		cache_st = st ;
+		(* bus *)
+		bus_out = bus_o
+	}
+tel
+
+(* ------------ Prog scheduler -------------- *)
+
+(* Try to execute next instruction only if complete is true *)
+node prog_scheduler <<
+	len : int ;
+	(* Data *)
+	instrs : instr_type^len
+>> (
+	complete : bool
+) returns (
+	instr : instr_type ;
+	counter : int
+) var
+	running : bool ;
+let
+	(* Pc *)
+	running = counter < len ;
+	counter = 0 -> pre counter + if complete & pre running then 1 else 0 ;
+	(* Arg fetch *)
+	instr = if running then instrs[> counter <] else default_instr
+tel
+
+
+(* ----------------- Nodes ----------------- *)
+
+fun make_request (id : int ; instr : instr_type) returns (request : request_type)
+let request = {
+	t = if instr.what = WFlush or instr.arg = id then instr.what else Nop ;
+	a = instr.v
+} tel
+
+unsafe node cache_block_helper (
+	instr : instr_type ;
+	buses_in : bus_cache_type^cache_size ;
+	(* Infos *)
+	node_id : int ;
+	id : int
+) returns (
+	cache_out : cache_block_output
+)
+let
+	cache_out = cache_block (node_id, make_request (id, instr), buses_in[> id <]) ;
+	(* Print *)
+	() = printf ("[%d] cache [%d]: (%s,%b) v=%d\n",
+		node_id, id,
+		stringOfState (cache_out.cache_st), cache_out.request_done, cache_out.request_out
+	)
+tel
+
+fun cache_op_finished (cur_i : instr_type ; out : cache_block_output ; id : int ; acc : bool)
+returns (o : bool)
+let o = acc or (cur_i.arg = id & out.request_done) tel
+
+fun cache_ops_finished << size : int >> (outs : cache_block_output^size ; cur_i : instr_type)
+returns (o : bool)
+let o = foldi << size >> cache_op_finished <(cur_i)> (outs, false) tel
+
+fun isWaitingSync (cur_i : instr_type) returns (o : bool)
+let o = cur_i.what = Sync tel
+
+fun getCacheBusOut (i : cache_block_output) returns (o : bus_cache_type)
+let o = i.bus_out tel
+
+(* Template node *)
+unsafe node node_template <<
+	node_id : int ;
+	nb_instr : int ;
+	program : instr_type^nb_instr
+>> (
+	(* Bus input *)
+	bus_in : bus_type
+) returns (
+	(* Only output data that is exported (bus data) *)
+	bus_out : bus_type
+) var
+	(* internals *)
+	canTick : bool ; (* can we go to next instr *)
+	current_instr : instr_type ;
+	d_pc : int ; (* info : program counter *)
+	(* storing cache states *)
+	caches : cache_block_output^cache_size ;
+let
+	(* Pc *)
+	canTick = false -> (
+		cache_ops_finished << cache_size >> (pre caches, pre current_instr) or
+		((not pre bus_out.sync) or bus_in.sync)
+	) ;
+	(* Pc + program *)
+	(current_instr, d_pc) = prog_scheduler << nb_instr, program >> (canTick) ;
+	(* Cache *)
+	caches = mapi << cache_size >> cache_block_helper <(
+		current_instr,
+		bus_in.cache_bus,
+		node_id
+	)> () ;
+	(* Outputs *)
+	bus_out = {
+		sync = isWaitingSync (current_instr) ;
+		cache_bus = map << cache_size >> getCacheBusOut (caches)
+	} ;
+	(* Debug : printfs *)
+	() = printf ("[%d] proc: [%d]= %s (%d, %d)\n", node_id, d_pc,
+		stringOfInstr (current_instr.what), current_instr.arg, current_instr.v) ;
+tel
+
+(* Node 0, instr *)
+const n0_nb_i : int = 4
+const n0_prog : instr_type^n0_nb_i = [
+	{ what = W ; arg = 0 ; v = 42 },
+	{ what = Sync ; arg = -1 ; v = -1 },
+	{ what = R ; arg = 1 ; v = -1 },
+	{ what = W ; arg = 1 ; v = 53 }
+]
+
+(* Node 1, instr *)
+const n1_nb_i : int = 5
+const n1_prog : instr_type^n1_nb_i = [
+	{ what = W ; arg = 1 ; v = 542 },
+	{ what = R ; arg = 1 ; v = -1 },
+	{ what = Sync ; arg = -1 ; v = -1 },
+	{ what = R ; arg = 0 ; v = -1 },
+	{ what = W ; arg = 0 ; v = 553 }
+]
+
+(* ------------------ Bus ------------------- *)
+fun isSyncedHelper (b : bus_type ; acc : bool) returns (o : bool)
+let o = acc & b.sync tel
+
+fun processCacheBus (node_id : int ; t_b : bus_cache_type ; acc : bus_cache_type)
+returns (o : bus_cache_type)
+let
+	o = {
+		(* Deciding which is the M state node (last) *)
+		want_ownership = acc.want_ownership or t_b.want_ownership ;
+		who_owns = if t_b.want_ownership then node_id else acc.who_owns ;
+		
+		(* Exchanging values *)
+		value = if t_b.has_valid_value then t_b.value else acc.value ;
+		has_valid_value = acc.has_valid_value or t_b.has_valid_value
+	}
+tel
+
+fun cacheBusHelper (bus : bus_type ; node_id : int ; acc : bus_cache_type^cache_size)
+returns (o : bus_cache_type^cache_size)
+let o = map << cache_size >> processCacheBus <(node_id)> (bus.cache_bus, acc) tel
+
+unsafe fun printBusState (bus : bus_cache_type ; id : int) returns ()
+let
+	() = printf ("bus [%d] : own=%d | v=%d\n", id,
+		bus.who_owns, bus.value
+	)
+tel
+
+(* ----------------- Main ------------------ *)
+unsafe node main () returns (sep : int^4)
+var
+	bus_outs : bus_type^nbNode ;
+	bus_in : bus_type ;
+let
+	(* Buses *)
+	bus_in = {
+		(* Sync instr bus *)
+		sync = false fby fold << nbNode >> isSyncedHelper (bus_outs, true) ;
+		(* Cache management bus *)
+		cache_bus = (default_bus_cache^cache_size) fby 
+			(foldi << nbNode >> cacheBusHelper (bus_outs, default_bus_cache^cache_size))
+	} ;
+	(* Nodes *)
+	bus_outs = [
+		node_template << 0, n0_nb_i, n0_prog >> (bus_in),
+		node_template << 1, n1_nb_i, n1_prog >> (bus_in)
+	] ;
+	(* Print *)
+	() = printf ("bus : sync=%b\n", bus_in.sync) ;
+	() = mapi << cache_size >> printBusState (bus_in.cache_bus) ;
+	(* Sep *)
+	sep = 888888888^4
+tel
+

@@ -1,0 +1,73 @@
+#!/bin/bash
+
+### Dir
+prefix=/home/fgindraud/stage/heptagon
+
+### Test param
+cc_opt="-i -target c" #-s main"
+cc_out_suffix="prog"
+cc_nb_step=10
+
+heptc="./heptc"
+cc="gcc -std=c99 -I$prefix/src/lib/c -I. -O2 -Dstring=char*"
+
+### Makefile style
+work () {
+	echo "$@"
+	"$@"
+}
+
+rm_cmd () {
+	work cd "$prefix"
+	for ext in epci mls obc; do
+		if ls *.$ext &> /dev/null; then
+			work rm -v *.$ext
+		fi
+	done
+}
+
+cc_cmd () {
+	if [ "$1" == "-v" ]; then
+		verbose="-v"
+		shift
+	fi
+
+	name=${1:-test}
+	bin_name=$name-$cc_out_suffix
+	
+	set -o errexit
+	
+	work cd "$prefix"
+	work $heptc $verbose $cc_opt "$name.ept"
+	work cd "$prefix/${name}_c"
+	#sed -i 's/int \[\]/Msi__instr_type []/g' *.c *.h
+	work $cc *.c -o "$bin_name"
+	work "./$bin_name" "${2:-$cc_nb_step}"
+}
+
+make_iostream () {
+	lib_name="iostream"
+	pos="src/lib"
+	
+	set -o errexit
+
+	work cd "$prefix"
+	work $heptc "$pos/$lib_name.epi"
+	work mv "$lib_name.epci" "$pos/"
+}
+
+### Main
+todo=$1
+shift
+
+case "$todo" in
+	rm) (rm_cmd)
+		;;
+	cc) (cc_cmd "$@")
+		;;
+	make_iostream) (make_iostream)
+		;;
+	*) echo rm cc make_iostream
+		;;
+esac
+
