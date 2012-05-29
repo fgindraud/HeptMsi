@@ -1,10 +1,10 @@
 #!/bin/bash
 
 ### Dir
-prefix=/home/fgindraud/stage/heptagon
+prefix=/home/fgindraud/stage/heptagon/HeptMsi
 
 ### Test param
-cc_opt="-i -target c" #-s main"
+cc_opt="-i -target c -O -s main"
 cc_out_suffix="prog"
 cc_nb_step=10
 
