@@ -30,6 +30,9 @@ type bus_cache_type = {
 
 	(* M state info *)
 	is_any_M : bool ; (* out : state = M | in : is any M cache block *)
+	
+	(* Read flag *)
+	want_read : bool ; (* out : if try to read and isAnyM | in : is any want_read flag *)
 
 	(* Backing store interaction *)
 	want_write : bool ; (* out : you want to write *)
@@ -42,6 +45,8 @@ const default_bus_cache : bus_cache_type = {
 	who_owns = -1 ;
 	
 	is_any_M = false ;
+
+	want_read = false ;
 
 	want_write = false ;
 	value = 0 ;
@@ -105,15 +110,18 @@ let
 		state W_I do
 			ok = false ;
 			bus_o = default_bus_cache
-			unless request.t = R then A_I_R
+			unless request.t = R then A_I_Want_Read
 				| request.t = W then Want_M
 		state W_S do
 			ok = (request.t = R) ; (* Can read *)
 			bus_o = default_bus_cache
-			unless request.t = W then Want_M
+			unless bus_in.want_ownership then A_S_Invalidate 
+				| request.t = W then Want_M
 		state W_M do
 			ok = (request.t = R or request.t = W) ; (* Can read or write *)
 			bus_o = default_bus_cache
+			unless bus_in.want_ownership & bus_in.who_owns <> node_id then Flush_M_to_I
+				| bus_in.want_read then Flush_M_to_S
 		(* go in M state *)
 		state Want_M do
 			ok = false ; (* not completed *)
@@ -125,18 +133,37 @@ let
 			st = M
 			until true then W_M
 		(* Flush M state *)
-		state Flush_M do
+		state Flush_M_to_S do
 			ok = false ;
-			bus_o = default_bus_cache	
+			bus_o = { ({ default_bus_cache with .want_write = true }) with .value = data }
+			unless bus_in.who_writed = node_id then Flush_success_M_to_S
+		state Flush_success_M_to_S do
+			ok = true ; bus_o = default_bus_cache ;
+			st = S
+			until true then W_S
+		state Flush_M_to_I do
+			ok = false ;
+			bus_o = { ({ default_bus_cache with .want_write = true }) with .value = data }
+			unless bus_in.who_writed = node_id then Flush_success_M_to_I
+		state Flush_success_M_to_I do
+			ok = true ; bus_o = default_bus_cache ;
+			st = I
+			until true then W_I
 		(* Action states for I state *)
-		state A_I_R do
+		state A_I_Want_Read do
 			ok = false ;
-			bus_o = default_bus_cache ;
+			bus_o = { default_bus_cache with .want_read = true } ;
+			until not bus_in.is_any_M then A_I_Can_Read
+		state A_I_Can_Read do
+			ok = true ; bus_o = default_bus_cache ;
 			data = bus_in.value ;
 			st = S
 			until true then W_S
 		(* Action states for S state *)
-		(* Action states for M state *)
+		state A_S_Invalidate do
+			ok = false ; bus_o = default_bus_cache ;
+			st = I
+			until true then W_I
 	end ;
 	(* Forward real data *)
 	out = {
@@ -256,22 +283,25 @@ let
 tel
 
 (* Node 0, instr *)
-const n0_nb_i : int = 4
+const n0_nb_i : int = 5
 const n0_prog : instr_type^n0_nb_i = [
 	{ what = W ; arg = 0 ; v = 42 },
 	{ what = Sync ; arg = -1 ; v = -1 },
 	{ what = R ; arg = 1 ; v = -1 },
-	{ what = W ; arg = 1 ; v = 53 }
+	{ what = W ; arg = 1 ; v = 53 },
+	{ what = Nop ; arg = -1 ; v = -1 }
 ]
 
 (* Node 1, instr *)
-const n1_nb_i : int = 5
+const n1_nb_i : int = 7
 const n1_prog : instr_type^n1_nb_i = [
 	{ what = W ; arg = 1 ; v = 542 },
 	{ what = R ; arg = 1 ; v = -1 },
 	{ what = Sync ; arg = -1 ; v = -1 },
 	{ what = R ; arg = 0 ; v = -1 },
-	{ what = W ; arg = 0 ; v = 553 }
+	{ what = W ; arg = 0 ; v = 553 },
+	{ what = R ; arg = 0 ; v = -1 },
+	{ what = R ; arg = 1 ; v = -1 }
 ]
 
 (* ------------------ Mem ------------------- *)
@@ -306,6 +336,8 @@ let
 
 		is_any_M = t_b.is_any_M or acc.is_any_M ;
 		
+		want_read = t_b.want_read or acc.want_read ;
+		
 		(* Prepare inputs for main memory : accept last writer *)
 		want_write = t_b.want_write or acc.want_write ;
 		value = if t_b.want_write then t_b.value else acc.value ;
@@ -319,16 +351,19 @@ let o = map << cache_size >> processCacheBus <(node_id)> (bus.cache_bus, acc) te
 
 unsafe fun printBusState (bus : bus_cache_type ; id : int) returns ()
 let
-	() = printf ("bus [%d] : own=(%b,%d) v=%d\n", id,
+	() = printf ("bus [%d] : own=(%b,%d) | v=%d | anyM=%b | wantR=%b\n", id,
 		bus.want_ownership,
 		bus.who_owns,
-		bus.value
+		bus.value,
+		bus.is_any_M, bus.want_read
 	)
 tel
 
 (* ----------------- Main ------------------ *)
-unsafe node main () returns (sep : int^4)
+unsafe node main () returns (sep : int^5)
 var
+	step : int ;	
+
 	bus_outs : bus_type^nbNode ;
 	bus_gathered : bus_type ;
 	bus_in : bus_type ;
@@ -355,6 +390,7 @@ let
 	() = printf ("bus : sync=%b\n", bus_in.sync) ;
 	() = mapi << cache_size >> printBusState (bus_in.cache_bus) ;
 	(* Sep *)
-	sep = 888888888^4
+	step = 0 fby step + 1 ;
+	sep = [step] @ 888888888^4
 tel
 
