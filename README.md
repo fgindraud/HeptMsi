@@ -1,4 +1,2 @@
 HeptMsi
 =======
-
-Heptagone MSI simulator
