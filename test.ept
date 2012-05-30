@@ -1,20 +1,11 @@
-type bus_cache_type = {
-	want_ownership : bool ; who_owns : int ;
+type t = { a : int ; b : int }
 
-	has_valid_value : bool ; value : int (* given by the first S cache block *)
-}
-
-fun processCacheBus (node_id : int ; t_b : bus_cache_type ; acc : bus_cache_type)
-returns (o : bus_cache_type)
+node main () = (o, p : int)
+var z, z2 : t ;
 let
-	o = {
-		(* Deciding which is the M state node (last) *)
-		want_ownership = acc.want_ownership or t_b.want_ownership ;
-		who_owns = if t_b.want_ownership then node_id else acc.who_owns ;
-		
-		(* Exchanging values *)
-		value = if t_b.has_valid_value then t_b.value else acc.value ;
-		has_valid_value = acc.has_valid_value or t_b.has_valid_value
-	}
+	z = { a = 0 ; b = 0 } ;
+	z2 = { ({ z with .a = 34 }) with .b = 43 } ;
+	o = z2.a ; p = z2.b
 tel
+
 

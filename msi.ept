@@ -25,16 +25,27 @@ type request_type = {
 
 type bus_cache_type = {
 	(* M state management *)
-	want_ownership : bool ; who_owns : int ;
+	want_ownership : bool ; (* out : you want to go in M state | in : someone wants *)
+	who_owns : int ; (* in : who is elected *)
+
+	(* M state info *)
+	is_any_M : bool ; (* out : state = M | in : is any M cache block *)
 
 	(* Backing store interaction *)
-	want_write : bool ; value : int
+	want_write : bool ; (* out : you want to write *)
+	value : int ; (* out : value to write | in : value in mem *)
+	who_writed : int (* in : who writed the last time *)
 }
 
 const default_bus_cache : bus_cache_type = {
-	want_ownership = false ; who_owns = -1 ;
+	want_ownership = false ;
+	who_owns = -1 ;
+	
+	is_any_M = false ;
 
-	has_valid_value = false ; value = -1
+	want_write = false ;
+	value = 0 ;
+	who_writed = -1
 }
 
 type bus_type = {
@@ -86,36 +97,46 @@ node cache_block (
 ) var
 	ok : bool ;
 	bus_o : bus_cache_type ;
-	last data : int = 0 ;
-	last st : cache_state = S ;
+	last data : int = -1 ;
+	last st : cache_state = I ;
 let
 	automaton
 		(* Waiting states *)
 		state W_I do
-			st = I ;
-			ok = false ; bus_o = default_bus_cache
+			ok = false ;
+			bus_o = default_bus_cache
+			unless request.t = R then A_I_R
+				| request.t = W then Want_M
 		state W_S do
-			st = S ;
-			ok = false ; bus_o = default_bus_cache
-			unless request.t = R then A_S_R
-				| request.t = W then A_S_W
+			ok = (request.t = R) ; (* Can read *)
+			bus_o = default_bus_cache
+			unless request.t = W then Want_M
 		state W_M do
-			st = M ;
-			ok = false ; bus_o = { default_bus_cache with .want_ownership = true }
-			unless request.t = R then A_M_R
-		(* Action states for S state *)
-		state A_S_R do
-			ok = true ; bus_o = default_bus_cache
-			until true then W_S
-		state A_S_W do
-			data = request.a fby data ;
-			ok = false ; (* Wait for ownership *)
-			bus_o = { default_bus_cache with .want_ownership = true } ; (* Maintain request *)
-			until bus_in.who_owns = node_id then W_M
-		(* Action states for M state *)
-		state A_M_R do
-			ok = true ; bus_o = default_bus_cache
+			ok = (request.t = R or request.t = W) ; (* Can read or write *)
+			bus_o = default_bus_cache
+		(* go in M state *)
+		state Want_M do
+			ok = false ; (* not completed *)
+			bus_o = { default_bus_cache with .want_ownership = true } ; (* signal we want the block *)
+			unless bus_in.who_owns = node_id then Cached_In_M	
+		state Cached_In_M do
+			ok = true ; bus_o = default_bus_cache ;
+			data = request.a ; (* Cache the write *)
+			st = M
 			until true then W_M
+		(* Flush M state *)
+		state Flush_M do
+			ok = false ;
+			bus_o = default_bus_cache	
+		(* Action states for I state *)
+		state A_I_R do
+			ok = false ;
+			bus_o = default_bus_cache ;
+			data = bus_in.value ;
+			st = S
+			until true then W_S
+		(* Action states for S state *)
+		(* Action states for M state *)
 	end ;
 	(* Forward real data *)
 	out = {
@@ -125,7 +146,7 @@ let
 		(* info *)
 		cache_st = st ;
 		(* bus *)
-		bus_out = bus_o
+		bus_out = { bus_o with .is_any_M = (st = M) }
 	}
 tel
 
@@ -214,7 +235,7 @@ let
 	(* Pc *)
 	canTick = false -> (
 		cache_ops_finished << cache_size >> (pre caches, pre current_instr) or
-		((not pre bus_out.sync) or bus_in.sync)
+		((pre bus_out.sync) & bus_in.sync)
 	) ;
 	(* Pc + program *)
 	(current_instr, d_pc) = prog_scheduler << nb_instr, program >> (canTick) ;
@@ -253,6 +274,24 @@ const n1_prog : instr_type^n1_nb_i = [
 	{ what = W ; arg = 0 ; v = 553 }
 ]
 
+(* ------------------ Mem ------------------- *)
+
+node memoryBlock (write : bool ; value : int) returns (o : int ; written : bool)
+let
+	o = 0 -> if write then value else pre o ;
+	written = write
+tel
+
+node memoryBlockHelper (request : bus_cache_type) returns (ans : bus_cache_type)
+var
+	value : int ; written : bool ;
+	tmp : bus_cache_type ;
+let
+	(value, written) = memoryBlock (request.want_write, request.value) ;
+	tmp = { request with .value = value } ;
+	ans = { tmp with .who_writed = if written then request.who_writed else -1 }
+tel
+
 (* ------------------ Bus ------------------- *)
 fun isSyncedHelper (b : bus_type ; acc : bool) returns (o : bool)
 let o = acc & b.sync tel
@@ -264,10 +303,13 @@ let
 		(* Deciding which is the M state node (last) *)
 		want_ownership = acc.want_ownership or t_b.want_ownership ;
 		who_owns = if t_b.want_ownership then node_id else acc.who_owns ;
+
+		is_any_M = t_b.is_any_M or acc.is_any_M ;
 		
-		(* Exchanging values *)
-		value = if t_b.has_valid_value then t_b.value else acc.value ;
-		has_valid_value = acc.has_valid_value or t_b.has_valid_value
+		(* Prepare inputs for main memory : accept last writer *)
+		want_write = t_b.want_write or acc.want_write ;
+		value = if t_b.want_write then t_b.value else acc.value ;
+		who_writed = if t_b.want_write then node_id else acc.who_writed
 	}
 tel
 
@@ -277,8 +319,10 @@ let o = map << cache_size >> processCacheBus <(node_id)> (bus.cache_bus, acc) te
 
 unsafe fun printBusState (bus : bus_cache_type ; id : int) returns ()
 let
-	() = printf ("bus [%d] : own=%d | v=%d\n", id,
-		bus.who_owns, bus.value
+	() = printf ("bus [%d] : own=(%b,%d) v=%d\n", id,
+		bus.want_ownership,
+		bus.who_owns,
+		bus.value
 	)
 tel
 
@@ -286,16 +330,22 @@ tel
 unsafe node main () returns (sep : int^4)
 var
 	bus_outs : bus_type^nbNode ;
+	bus_gathered : bus_type ;
 	bus_in : bus_type ;
 let
 	(* Buses *)
-	bus_in = {
+	bus_gathered = {
 		(* Sync instr bus *)
 		sync = false fby fold << nbNode >> isSyncedHelper (bus_outs, true) ;
 		(* Cache management bus *)
 		cache_bus = (default_bus_cache^cache_size) fby 
 			(foldi << nbNode >> cacheBusHelper (bus_outs, default_bus_cache^cache_size))
 	} ;
+	(* Main mem *)
+	bus_in = {
+		sync = bus_gathered.sync ;
+		cache_bus = map << cache_size >> memoryBlockHelper (bus_gathered.cache_bus) 
+	} ;	
 	(* Nodes *)
 	bus_outs = [
 		node_template << 0, n0_nb_i, n0_prog >> (bus_in),
