@@ -7,7 +7,7 @@ const cache_size : int = 3
 const nbNode : int = 2
 
 (* Common struct *)
-type instr_what = R | W | Nop | Sync | WFlush
+type instr_what = R | W | Nop | Sync 
 type cache_state = M | S | I
 
 type instr_type = {
@@ -75,8 +75,7 @@ let
 		| R do o = "Read" ;
 		| W do o = "Write" ;
 		| Nop do o = "Nop" ;
-		| Sync do o = "Sync" ;
-		| WFlush do o = "WFlush"
+		| Sync do o = "Sync"
 	end
 tel
 
@@ -204,7 +203,7 @@ tel
 
 fun make_request (id : int ; instr : instr_type) returns (request : request_type)
 let request = {
-	t = if instr.what = WFlush or instr.arg = id then instr.what else Nop ;
+	t = if instr.arg = id then instr.what else Nop ;
 	a = instr.v
 } tel
 
