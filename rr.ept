@@ -1,0 +1,80 @@
+open Iostream
+
+(***************** Clocks ********************)
+
+(* Clock *)
+node clock () returns (ck : int)
+let
+	ck = 0 -> 1 + pre ck
+tel
+
+(* One shot *)
+node fireOnceAt << time : int >> ()
+returns (o : bool)
+let
+	o = clock () = time
+tel
+
+(* Multiple shots *) 
+fun fireAtHelper (c1 : int ; c2 : int ; acc : bool)
+returns (o : bool)
+let
+	o = acc or c1 = c2
+tel
+
+node fireAt << n : int ; ticks : int^n >> ()
+returns (o : bool)
+let
+	o = fold << n >> fireAtHelper <( clock () )> (ticks, false)
+tel
+
+(****************** Round robin *******************)
+
+(* Round robin selector *)
+fun roundRobinHelper (previous : int ; enabled : bool ; currentIndex : int ; selected : int)
+returns (new : int)
+let
+	new =
+		if enabled & (
+			selected = -1 or
+			(selected <= previous & currentIndex > previous)
+		)
+		then currentIndex
+		else selected ;
+tel
+
+node roundRobin << n : int >> (enabled : bool^n)
+(*returns (chosen : int ; isAnyChosen : bool)*)
+returns (selected : int)
+var
+(*	selected : int ;*)
+let
+	selected = foldi << n >> roundRobinHelper <( (-1) -> pre selected )> (enabled, -1) ;
+(*	isAnyChosen = selected >= 0 ;
+	chosen = selected when isAnyChosen*)
+tel
+
+(******************** Main testing zone *****************)
+
+(* Artillery *)
+node artillery << n : int ; value : int ; ticks : int^n >> ()
+returns (o : int ; ck : bool)
+let
+	ck = fireAt << n, ticks >> () ;
+	o = value when ck
+tel
+
+node main () returns (chosen : int ; shots : bool^5)
+var
+let
+	shots = [
+		true,
+		fireAt << 3, [2, 3, 5] >> (),
+		true,
+		fireAt << 4, [0, 3, 4, 5] >> (),
+		fireAt << 6, [5, 6, 7, 7, 8, 9] >> ()
+	] ;
+	chosen = roundRobin << 5 >> (shots)
+tel
+
+

@@ -1,0 +1,117 @@
+open Iostream
+
+(* ---------------- Header ----------------- *)
+
+(* Sim param *)
+const cCacheSize : int = 2
+const cNbNode : int = 2
+
+(* Common struct *)
+type tNodeId = int
+type tAddr = int
+
+type tInstrTypeEnum = R | W | N | S | A
+type tCacheStateEnum = Ow | Sh | In
+
+type tInstr = {
+	iType : tInstrTypeEnum ;
+	iArg : tAddr ;
+	iValue : int
+}
+
+const cInstrNop : tInstr = { iType = N ; iArg = -1 ; iValue = -1 }
+const cInstrSync : tInstr = { iType = S ; iArg = -1 ; iValue = -1 }
+
+type tRequest = {
+	rType : tInstrTypeEnum ;
+	rValue : int
+}
+
+
+(* Utils *)
+fun stringOfInstr (i : tInstrTypeEnum) returns (o : string)
+let
+	switch i
+		| R do o = "Read" ;
+		| W do o = "Write" ;
+		| N do o = "Nop" ;
+		| S do o = "Sync" ;
+		| A do o = "Alloc"
+	end
+tel
+
+fun stringOfState (s : tCacheStateEnum) returns (o : string)
+let
+	switch s
+		| Ow do o = "O" ;
+		| Sh do o = "S" ;
+		| In do o = "I"
+	end
+tel
+
+(* ----------------- Cache ----------------- *)
+
+(* ------------ Prog scheduler -------------- *)
+
+(* Try to execute next instruction only if complete is true *)
+unsafe node sequentialProgram <<
+	len : int ;
+	(* Data *)
+	program : tInstr^len
+>> (
+	complete : bool ;
+	(* Info *)
+	nodeId : tNodeId
+) returns (
+	currentInstr : tInstr
+) var
+	notFinished : bool ;
+	pc : int ;
+let
+	(* Pc *)
+	notFinished = pc < len ;
+	pc = 0 -> pre pc + if complete & pre notFinished then 1 else 0 ;
+	(* Arg fetch *)
+	currentInstr = program.[pc] default cInstrNop ;
+	(* Trace *)
+	() = printf ("[%d] proc: [%d]= %s (%d, %d)\n", nodeId, pc,
+		stringOfInstr (currentInstr.iType), currentInstr.iArg, currentInstr.iValue) ;
+tel
+
+
+(* ----------------- Nodes ----------------- *)
+
+(* Node 0, instr *)
+const nodeCodeLen0 : int = 6
+const nodeCode0 : tInstr^nodeCodeLen0 = [
+	{ iType = A ; iArg = 0  ; iValue = 10 },
+	{ iType = A ; iArg = 1  ; iValue = 20 },
+	(**) cInstrSync,
+	{ iType = W ; iArg = 1  ; iValue = 21 },
+	(**) cInstrSync,
+	{ iType = R ; iArg = 0  ; iValue = -1 }
+]
+
+(* Node 1, instr *)
+const nodeCodeLen1 : int = 6
+const nodeCode1 : tInstr^nodeCodeLen1 = [
+	(**) cInstrSync,
+	{ iType = R ; iArg = 0  ; iValue = -1 },
+	{ iType = W ; iArg = 0  ; iValue = 11 },
+	(**) cInstrSync,
+	{ iType = R ; iArg = 0  ; iValue = -1 },
+	{ iType = R ; iArg = 0  ; iValue = -1 }
+]
+
+(* ------------------ Bus ------------------- *)
+
+(* ----------------- Main ------------------ *)
+unsafe node main () returns (sep : int^5)
+var
+	step : int ;	
+let
+	(* Sep *)
+	step = 0 -> pre step + 1 ;
+	sep = [step] @ 888888888^4
+tel
+

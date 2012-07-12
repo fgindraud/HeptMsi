@@ -3,7 +3,7 @@ open Iostream
 (* ---------------- Header ----------------- *)
 
 (* Sim param *)
-const cache_size : int = 3
+const cache_size : int = 2
 const nbNode : int = 2
 
 (* Common struct *)

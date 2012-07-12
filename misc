@@ -5,7 +5,7 @@ src_prefix=/home/fgindraud/stage/heptagon/work
 cc_prefix=/home/fgindraud/stage/heptagon/src
 
 ### Test param
-cc_opt="-i -target c -O -s main"
+cc_opt="-target c -O -s main -lho"
 cc_out_suffix="prog"
 cc_nb_step=10
 
@@ -19,7 +19,7 @@ work () {
 }
 
 rm_cmd () {
-	work cd "$prefix"
+	work cd "$src_prefix"
 	for ext in epci mls obc; do
 		if ls *.$ext &> /dev/null; then
 			work rm -v *.$ext

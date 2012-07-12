@@ -1,11 +1,6 @@
-type t = { a : int ; b : int }
-
-node main () = (o, p : int)
-var z, z2 : t ;
+node main () returns (a : int)
 let
-	z = { a = 0 ; b = 0 } ;
-	z2 = { ({ z with .a = 34 }) with .b = 43 } ;
-	o = z2.a ; p = z2.b
+	a = -1 -> pre a;
 tel
 
 
