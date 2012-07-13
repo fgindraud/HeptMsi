@@ -20,11 +20,17 @@ work () {
 
 rm_cmd () {
 	work cd "$src_prefix"
+	
 	for ext in epci mls obc; do
 		if ls *.$ext &> /dev/null; then
 			work rm -v *.$ext
 		fi
 	done
+
+	out_dirs=$(ls -d *_c 2> /dev/null)
+	if [ $? == 0 ]; then
+		work rm -rv $out_dirs
+	fi
 }
 
 cc_cmd () {
